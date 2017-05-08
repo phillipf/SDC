@@ -1,0 +1,1130 @@
+---
+title: "SDC Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+knitr::opts_chunk$set(echo = TRUE)
+library(RODBC)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+library(data.table)
+library(TSclust)
+library(quantmod)
+library(doParallel)
+library(dtwclust)
+library(ggdendro)
+library(rpart)
+library(AddressR)
+library(sp)
+library(rgdal)
+library(postGIStools)
+library(BreakoutDetection)
+```
+
+##This is an R Markdown format used for publishing markdown documents to GitHub. When you click the **Knit** button all R code chunks are run and a markdown file (.md) suitable for publishing to GitHub is generated.
+
+## Read in the BC Tracking sheet
+
+```{r, include=FALSE}
+
+
+CWW_DW <- odbcDriverConnect(connection="Driver={SQL Server Native Client 11.0};
+                            server=wvdb1devsql;
+                            database=CWW_DW;
+                            uid=report;
+                            pwd=report")
+
+ABR <- odbcDriverConnect(connection="Driver={SQL Server Native Client 11.0};
+                                    server= WVdb1devsql;
+                                    database=ABR;
+                                    uid=CWW\\farrelp1;
+                                    Trusted_Connection=Yes;")
+
+
+# CWW_DW <- odbcDriverConnect(connection="Driver={SQL Server Native Client 11.0};
+#                             server=wvdb1devsql;
+#                             database=ABR;
+#                             uid=report;
+#                             pwd=report")
+
+# PROP <- sqlQuery(CWW_DW,"SELECT distinct [MASTERID]
+#                  ,[ACNAME]
+#                  ,[STREET]
+#                  ,[FINANCIAL_YEAR]
+#                  ,[Qtr]
+#                  ,[GBIREAD_TODATE]
+#                  ,[INVOICEDATE]
+#                  ,[CONSUMP]
+#                  ,[DAYS]
+#                  ,[DISPOSAL_DESCRIPTION]
+#                  ,[ITYPE_DESC]
+#                  FROM [CWW_DW].[dbo].[GENTRACK_WaterEfficiency_PROP_CONSUMP]
+#                  --WHERE [FINANCIAL_YEAR] = '2017'
+#                  --OR [FINANCIAL_YEAR] = '2016'",
+#                  stringsAsFactors = FALSE)
+
+#write.csv(PROP, "C:/Users/farrelp1/Documents/SDC/data/PROP.csv", row.names = F)
+
+PROP <- fread("C:/Users/farrelp1/Documents/SDC/data/PROP.csv")
+
+##Read in the BC tracking sheet 
+BC_tracking <- read.csv("N:/FWBI/SDCanalysis/Comms/Letters phase two/301116_BC_TrackingSheet.csv", stringsAsFactors = FALSE)
+
+BC_tracking <- BC_tracking[,1:11, drop=TRUE] 
+
+#get the latest Body Corp SDC report
+
+getData <- function() {
+
+  cmd <- readLines("N:/FWBI/SDCanalysis/Reports/PermanentBCreport/GetData.txt")
+
+  today <- format(Sys.Date(), "%d%m%Y")
+
+  cmd <- gsub("(.*)(\\'\\D*)(\\d+)(.*\\')(.*)", paste0("\\1", "\\2", today, "\\4", ")"), cmd)
+
+  shell(cmd, shell="C:/Windows/system32/cmd.exe")
+
+}
+
+getData()
+
+getBCreport <- function() {
+
+  if(!require(readr)) {
+    message("installing the 'readr' package")
+    install.packages("readr")
+  }
+
+  today <- format(Sys.Date(), "%d%m%Y")
+
+  filename <- paste("N:/FWBI/SDCanalysis/Reports/PermanentBCreport/", today, "_BodyCorpSDC.csv", sep = "")
+
+  read_csv(filename)
+
+}
+
+BC_report <- getBCreport()
+
+
+
+BC <- BC_report %>%
+      mutate(MASTERID = as.numeric(substring(CMAS_CONSUMER, 3, 9))) %>%
+      filter(!is.na(CMAS_CONSUMER)) %>%
+      mutate(NUMBER_FIRST = LOCA_HOUSE,
+             NUMBER_LAST = NA,
+             FINAL_STREET = LOCA_STREET,
+             FINAL_LOCALITY = LOCA_SUBURB,
+             ADDRESS_TYPE = 1) %>%
+      select(CMAS_CONSUMER, ITSDISPCLASS:SDCF) 
+```
+
+```{r tsclust}
+
+
+####data prep####
+prop_dt <- data.table(PROP)
+
+# x[,c("mean","sum"):=list(mean(b),sum(b)),by=a][]
+
+# prop_dt2 <- prop_dt[ !is.na(MASTERID) ][, c(-7)][, c("CONSUMP","DAYS"):=list(sum(CONSUMP, na.rm = T),sum(DAYS, na.rm = T)), by=list(MASTERID
+#                  ,ACNAME
+#                  ,STREET
+#                  ,FINANCIAL_YEAR
+#                  ,Qtr
+#                  #,GBIREAD_TODATE
+#                  ,DISPOSAL_DESCRIPTION
+#                  ,ITYPE_DESC)][, DAILYAVG := CONSUMP/ DAYS]#[, c(-6, -7)]
+
+prop_dt2 <- prop_dt[,c(1,2,4,5,8,9)][ !is.na(MASTERID) ][, c("CONSUMP","DAYS"):=list(sum(CONSUMP, na.rm = T),sum(DAYS, na.rm = T)), by=list(MASTERID
+                 ,ACNAME
+                 ,FINANCIAL_YEAR
+                 ,Qtr)][, DAILYAVG := CONSUMP/ DAYS]#[, c(-6, -7)]
+
+setkey(prop_dt2)
+
+prop_dt3 <- unique(prop_dt2)
+
+setkey(prop_dt3, MASTERID, ACNAME)
+
+BC_dt <- data.table(BC_report)
+
+BC_dt2 <- BC_dt[, MASTERID:= as.numeric(substring(CMAS_CONSUMER, 3, 9))][,c(30, 20)]
+
+#BC_dt3 <- BC_dt2
+
+BC_dt3 <- unique(BC_dt2)
+
+setkey(BC_dt3, MASTERID, ACNAME)
+
+BC_consump <- BC_dt3[prop_dt3, nomatch=0]
+
+BC_consump <- BC_consump[CONSUMP >= 0]
+
+hist(BC_consump[CONSUMP >= 0]$CONSUMP)
+
+####mts object####
+
+# BC_consump[, c("minYear","maxYear") := list(min(FINANCIAL_YEAR, na.rm = T),
+#                                             max(FINANCIAL_YEAR, na.rm = T)), 
+#            by = MASTERID]
+
+BC_ts <- dcast(BC_consump, MASTERID ~ FINANCIAL_YEAR + Qtr, value.name = "DAILYAVG", fill = NA)
+
+BC_ts2 = dcast(melt(BC_ts, measure = patterns("^20"), value.name = "DAILYAVG"), variable ~ MASTERID)
+
+ts1 <- as.ts(BC_ts2$`1000481`, frequency=4, start = C(2010,1), end = c(2017,3))
+
+# BC_ts3 <- lapply(BC_ts2, function(x) if(length(x[!is.na(x)]) > 15) {
+#                                         as.ts(x[!is.na(x)], frequency=4, start = C(2010,1), end = c(2017,3))
+#                                       }
+#                                       else {NA})
+
+BC_ts3 <- lapply(BC_ts2, function(x) if(length(x[!is.na(x)]) > 15) {
+                                        x[!is.na(x)]
+                                      }
+                                      else {NA})
+
+BC_ts4 <- BC_ts3[!is.na(BC_ts3)]
+
+BC_ts4$variable <- NULL
+
+series2 <- reinterpolate(BC_ts4, new.length = max(lengths(BC_ts4)))
+
+series <- zscore(series)
+
+####Dynamic time warping####
+
+cl <- makeCluster(detectCores())
+
+registerDoParallel(cl)
+
+pc.dtwlb2 <- tsclust(series, k = 5L, 
+                    distance = "dtw_lb", centroid = "pam", 
+                    seed = 3247, trace = TRUE,
+                    control = partitional_control(pam.precompute = FALSE),
+                    args = tsclust_args(dist = list(window.size = 5L)))
+#> Iteration 1: Changes / Distsum = 100 / 3214.899
+#> Iteration 2: Changes / Distsum = 18 / 2786.523
+#> Iteration 3: Changes / Distsum = 7 / 2700.449
+#> Iteration 4: Changes / Distsum = 3 / 2630.285
+#> Iteration 5: Changes / Distsum = 0 / 2630.285
+#> 
+#>  Elapsed time is 4.714 seconds.
+
+stopCluster(cl)
+registerDoSEQ()
+
+plot(pc.dtwlb2)
+
+pc.dtwlb2@cluster
+
+Clusters <- data.frame(CLUSTER = as.numeric(pc.dtwlb2@cluster), MASTERID = as.numeric(names(pc.dtwlb2@datalist)))
+
+scale_this <- function(x){
+  (x - mean(x, na.rm=TRUE)) / sd(x, na.rm=TRUE)
+}
+
+BC_consump$SCALED <- scale_this(BC_consump$DAILYAVG)
+
+#scale_this <- Vectorize(scale_this)
+
+BC_potential <- BC_consump %>%
+               left_join(BC_remaining, by = "MASTERID") %>%
+               #mutate(scaled = scale_this(DAILYAVG)) %>%
+               group_by(CMAS_CONSUMER) %>%
+               summarise(average = mean(SCALED,  na.rm=TRUE),
+                         std = sd(SCALED, na.rm=TRUE),
+                         maximum = max(SCALED,na.rm=TRUE),
+                         minimum = min(SCALED,na.rm=TRUE)) %>%
+               ungroup() %>%
+               filter(!is.na(average)) %>%
+               filter(!is.na(std))
+
+#BC_Clusters$DATE <- as.Date(as.yearqtr(paste(BC_Clusters$FINANCIAL_YEAR, BC_Clusters$Qtr), format = "%Y %q"))
+
+# cluster_1 <- BC_Clusters %>%
+#              filter(CLUSTER == 2) %>%
+#              group_by(MASTERID) %>%
+#              do(sample_n(.,2)) %>%
+#              ggplot(., aes(x = DATE, y=CONSUMP, group=MASTERID, colour=MASTERID)) + geom_line()
+
+# BC_consump %>%
+#   group_by(MASTERID) %>%
+#   dplyr::summarise(c(boxplot(DAILYAVG)))
+
+#BC_summary <- plyr::ldply(BC_consump$MASTERID, function(i) c(boxplot(BC_consump[MASTERID == i, ]$DAILYAVG)$stats))
+
+mydata <- select(BC_potential, 2:5) %>%
+          as.matrix
+
+rownames(mydata) <- BC_potential$MASTERID
+###step 2: produce a graph of the "Within groups sum of squares" for k = 1 through to k = 15 (where k = the number of clusters)###
+
+##need to the set the seed to ensure that the results of the kmeans algorithm are reproducible. This is important as the kmeans
+##algorithm initialises the cluster centers using a Random Number Generator. These Random Number Generators are called Pseudo 
+###Random Number Generators because they are in fact fully algorithmic: given the same seed, you get the same sequence (hence,
+###the results of the kmeans are reproducible).
+set.seed(100)
+
+###NOTE: The results of kmeans clustering is sensitive to the initial position of the cluster centres generated using the Pseudo Random
+###Number Generators. To get around this problem you specify "nstart" as a large number to get the algorithm to try many initial 
+###cluster centres for each of the arbitrarly large number of iterations specified by "iter.max".
+
+wss <- (nrow(mydata)-1)*sum(apply(mydata,2,var))
+for (i in 2:15) wss[i] <- sum(kmeans(mydata, 
+                                     centers=i,
+                                     iter.max=2000000,
+                                     nstart=100)$withinss
+                                     )
+plot(1:15, wss, type="b", xlab="Number of Clusters",
+     ylab="Within groups sum of squares")
+
+###Step 2 result: the graph of the "Within groups sum of squares" begins to tail off at around 8 clusters (NOTE: this is without 
+###including salting/curing bringing the actual total to nine clusters)
+
+###step 3: Split the data into 8 clusters using the kmeans funtion now that we know the optimal number of clusters###
+
+kfit <- kmeans(mydata, 6) # 9 cluster solution
+
+
+BC_Clusters <- aggregate(mydata,by=list(kfit$cluster),FUN=mean) %>%
+                          select(1:5) #%>%
+                          #arrange(-BOD, -iTDS)
+
+
+mydata <- data.frame(mydata, kfit$cluster) 
+
+BC_potential$Cluster = mydata$kfit.cluster
+
+BC_potential2 <- BC_potential %>% left_join(select(BC_sp2, CMAS_CONSUMER, ZONEDESC))
+
+###A hierarchical clustering method leads to a complex decision tree.  
+d <- dist(mydata, method = "euclidean") # distance matrix
+fit <- hclust(d, method="ward") 
+plot(fit)
+
+cfit <- rpart(factor(Cluster) ~ .-CMAS_CONSUMER, data = BC_potential2)
+
+cfit <- dendro_data(cfit,type="rectangle") 
+
+cfit <- ggplot() + 
+        geom_segment(data = cfit$segments, 
+                     aes(x = x, y = y, xend = xend, yend = yend)) + 
+        geom_text(data = cfit$labels, 
+                  aes(x = x, y = y, label = label), size = 5, vjust = 0) +
+        geom_text(data = cfit$leaf_labels, 
+                  aes(x = x, y = y, label = label), size = 5, vjust = 1) +
+        theme_dendro()
+
+
+BC_potential2 <- BC_potential %>%
+                 filter(Cluster > 1)
+  
+# clust.gr<-data.frame(num=unlist(cfit),
+#                      clust=rep(c("Clust1","Clust2"),times=sapply(cfit,length)))
+# 
+# text.df<-merge(label(cfit),M,by.x="label",by.y="row.names")
+# head(text.df)
+
+# ggsave("ConcentrationClusters4.png", dpi = 700)
+
+####Hierarchical clustering####
+
+cl <- makeCluster(detectCores())
+
+registerDoParallel(cl)
+
+series_nozero <- series[!unlist(unname(lapply(series, function(x) all(x == 0))))]
+
+hc_sbd <- tsclust(series_nozero, type = "h", k = 5L,
+                  #preproc = zscore,
+                  seed = 899, trace = TRUE,
+                  distance = "sbd", centroid = shape_extraction,
+                  control = hierarchical_control(method = "average"))
+
+# Cluster sizes
+table(hc_sbd@cluster)
+
+# By default, the dendrogram is plotted in hierarchical clustering
+plot(hc_sbd)
+
+# The series and the obtained prototypes can be plotted too
+plot(hc_sbd, type = "sc")
+
+BC_ts4$Cluster <- pc.dtwlb2@cluster
+
+compare <- compare_clusterings()
+
+#BC_ts4 <- na.contiguous(BC_ts3[!is.na(BC_ts3)])
+
+# BC_ts4 <- plyr::ldply(BC_ts3, cbind)
+# 
+# for(i in 1:length(BC_ts3)) {
+#   
+#   if(i == 1) {
+#     
+#     result <- BC_ts3[[i]]
+#     
+#   }  
+#   
+#   result <<- cbind(result, BC_ts3[[i]])
+#   
+# }
+
+####clustering####
+
+#BC_TS <- dcast(BC_consump, MASTERID ~ GBIREAD_TODATE, value.var = "CONSUMP", fill = NA)
+
+#BC_TS.list <- apply(BC_TS, 1, as.list)
+
+#dissimilarity <- diss(BC_ts4, METHOD = "DTWARP")
+
+```
+
+```{r planning zone}
+
+BC <- BC_report %>%
+      mutate(MASTERID = as.numeric(substring(CMAS_CONSUMER, 3, 9))) %>%
+      filter(!is.na(CMAS_CONSUMER)) %>%
+      mutate(NUMBER_FIRST = LOCA_HOUSE,
+             NUMBER_LAST = NA,
+             FINAL_STREET = LOCA_STREET,
+             FINAL_LOCALITY = LOCA_SUBURB,
+             ADDRESS_TYPE = 1) %>%
+      mutate(FINAL_STREET = gsub("'", "", FINAL_STREET)) %>%
+      mutate(KEY = ifelse(NUMBER_FIRST %% 2 == 0, 
+                          gsub(" ", "", paste0(substring(FINAL_STREET, 1,4), "EVEN"), fixed = TRUE),
+                          gsub(" ", "", paste0(substring(FINAL_STREET, 1,4), "ODD"), fixed = TRUE))) 
+
+nonblanks <- BC %>%
+             filter(!is.na(NUMBER_FIRST))
+
+#remove.packages("AddressR")
+
+cl <- makeCluster(detectCores())
+
+registerDoParallel(cl)
+
+BC2 <- AddressR::AddressClean(nonblanks = nonblanks, ID = "CMAS_CONSUMER")
+
+stopCluster(cl)
+registerDoSEQ()
+
+BC3 <- BC2 %>%
+        mutate(CMAS_CONSUMER = as.numeric(.id)) %>%
+        left_join(select(nonblanks, CMAS_CONSUMER, ADDRESS_TYPE), by = "CMAS_CONSUMER") %>%
+        mutate(ADDRESS_TEST = abs(ADDRESS_TYPE.y - ADDRESS_TYPE.x)) %>%
+        group_by(CMAS_CONSUMER) %>%
+        filter(ADDRESS_TEST == min(ADDRESS_TEST)) %>%
+        filter(CONFIDENCE == max(CONFIDENCE)) %>%
+        ungroup()
+
+BC_clean <- BC3 %>%
+            group_by(CMAS_CONSUMER) %>%
+            filter(row_number()==1) %>%
+            ungroup() %>%
+            select(CMAS_CONSUMER, 6:11)  %>%
+             mutate(LAT = as.numeric(gsub("(-*[0-9]*.[0-9]*)\\,([0-9]*.[0-9]*)","\\1",LATLON)),
+                    LON = as.numeric(gsub("(-*[0-9]*.[0-9]*)\\,([0-9]*.[0-9]*)","\\2",LATLON)))
+
+missing <- BC %>% 
+           anti_join(BC_clean, by = "CMAS_CONSUMER")
+
+# BC_sp <- sp::SpatialPointsDataFrame(coords = data.frame(BC_clean %>% select(LAT, LON)), 
+#                                      data = data.frame(BC_clean %>% select(-LAT, -LON)),
+#              #attr_tab = seatt, 
+#              proj4string=CRS("+proj=longlat +ellps=WGS84"))
+
+BC_sp <- data.frame(BC_clean)
+
+coordinates(BC_sp) <- ~LON+LAT
+
+proj4string(BC_sp) <- "+proj=longlat +datum=WGS84" 
+
+BC_sp <- spTransform(BC_sp, "+proj=longlat +ellps=GRS80 +no_defs")
+
+Planning <- readOGR("C:/Users/farrelp1/Documents/SDC/data/spatial/VMPLAN/layer/plan_zone.shp")
+
+overlay <- over(BC_sp, Planning)
+
+BC_sp2 <- BC_clean
+
+BC_sp2$ZONE_CODE <- as.character(overlay$ZONE_CODE)
+BC_sp2$ZONEDESC <- as.character(overlay$ZONEDESC)
+
+Zone_grp <- function(ZONEDESC) {
+  
+  if(grepl("RESIDENTIAL", ZONEDESC)) {
+    
+    return("RESIDENTIAL")
+    
+  }
+  
+  else if(grepl("COMMERCIAL", ZONEDESC)) {
+    
+    return("COMMERCIAL")
+    
+  }
+  
+  else if(grepl("INDUSTRIAL", ZONEDESC)) {
+    
+    return("INDUSTRIAL")
+    
+  }
+  
+  else if(grepl("MIXED USE|ACTIVITY CENTRE ZONE|COMPREHENSIVE DEVELOPMENT|SPECIAL|ROAD|URBAN GROWTH ZONE|TOWNSHIP ZONE|PUBLIC USE ZONE", ZONEDESC)) {
+    
+    return("MIXED USE")
+    
+  }
+  
+  else if(grepl("PUBLIC PARK", ZONEDESC)) {
+    
+    return("PARK")
+    
+  }
+  
+  else if(grepl("FARMING ZONE", ZONEDESC)) {
+
+    return("FARMING")
+
+  }
+  
+    else if(grepl("CAPITAL CITY", ZONEDESC)) {
+    
+    return("CBD")
+    
+  }
+  
+  else{return("OTHER")}
+  
+}
+
+Zone_grp <- Vectorize(Zone_grp)
+
+BC_sp3 <- BC_sp2 %>%
+         mutate(ZONEGROUP = Zone_grp(ZONEDESC)) 
+
+BC_sp3 <- BC_sp3 %>%
+         select(1, ZONEGROUP) %>%
+         mutate(MASTERID = as.numeric(substring(CMAS_CONSUMER, 3, 9))) %>%
+         left_join(BC_consump) %>%
+         group_by(CMAS_CONSUMER) %>%
+         filter(all(DAILYAVG != 0))
+
+boxplot(SCALED ~ ZONEGROUP, data=BC_sp)
+
+#series_nozero <- BC_sp[!unlist(unname(lapply(BC_sp, function(x) all(x == 0))))]
+
+#overlay <- BC_sp %over% Planning 
+
+# writeOGR(BC_sp, dsn="./data/BC_sp.tab", layer="BC_sp", driver="MapInfo File", overwrite_layer = T) 
+
+# maptools::writeSpatialShape(BC_sp, "BC_sp")
+
+# postgis_insert(ABR, BC_sp, "CWW_BodyCorporate",
+#                write_cols = c("CMAS_CONSUMER", "NUMBER_FIRST", "NUMBER_LAST", "STREET", "LOCALITY_NAME", "POSTCODE", "LATLON"),
+#                geom_name = "coordinates", hstore_name = NA)
+
+# cmd <- '"C:\\Users\\farrelp1\\Documents\\QGISEssen\\bin\\ogr2ogr.exe" -overwrite -f MSSQLSpatial "MSSQL:server=WVDB1DEVSQL;database=ABR;trusted_connection=yes" "C:\\Users\\farrelp1\\Documents\\SDC\\BC_sp.shp" -nln "CWW_BODY_CORPORATE"'
+# 
+# system(cmd)
+
+```
+
+```{r Phase one revenue}
+
+#Calculate revenue gained from phase one
+
+phaseone_BC <- read.csv("file:///N:/FWBI/SDCanalysis/KeyDocuments/BCsSDC.csv", 
+                                   stringsAsFactors = FALSE) %>%
+                    rbind(read.csv("file:///N:/FWBI/SDCanalysis/KeyDocuments/SchoolsSDC.csv", 
+                                   stringsAsFactors = FALSE, col.names = colnames(.)))
+
+BC_completed <- phaseone_BC %>% 
+                filter(grepl("Y", TT.Status, ignore.case = TRUE)) 
+
+any(BC_completed$CONSUMERNO %in% BC$CMAS_CONSUMER)
+
+BC_remaining <- BC_completed %>% 
+                filter(CONSUMERNO %in% BC$CMAS_CONSUMER) 
+
+BC_revenue2 <- BC_completed %>% 
+              filter(!(CONSUMERNO %in% BC$CMAS_CONSUMER))  %>%
+              mutate(MASTERID = as.numeric(substring(CONSUMERNO, 3, 9))) %>%
+              select(CONSUMERNO, MASTERID) %>%
+              left_join(PROP)  %>%
+              #filter((  == 1 &  FINANCIAL_YEAR == 2017)) %>%
+              #mutate(Qtr = paste("Qtr_", Qtr, "_17", sep = "")) %>%
+              select(CONSUMERNO, MASTERID, Qtr, CONSUMP, DISPOSAL_DESCRIPTION) %>%
+              group_by(CONSUMERNO, MASTERID, Qtr) %>%
+              summarise(CONSUMP = sum(CONSUMP)) %>%
+              #spread(Qtr, CONSUMP) %>%
+              ungroup %>%
+              group_by(CONSUMERNO, MASTERID) %>%
+              summarise(CONSUMP = mean(CONSUMP)) %>%
+              mutate(BC = ifelse(CONSUMERNO %in% BC$CMAS_CONSUMER, "NOTBILLED","BILLED"),
+                     Change = (CONSUMP * 0.9 * 1.7324) - 0)
+
+phaseone_revenue <- BC_revenue2 %>%
+                    group_by(BC) %>%
+                    summarise(TotalAnnualRevenue = sum(Change, na.rm = TRUE)) %>%
+                    ungroup() %>%
+                    filter(!is.na(BC))
+
+phaseone_revenue$Phase <- 1
+
+#write.csv(phaseone_revenue, "N:/FWBI/SDCanalysis/Reports/Results/091216_phaseone_revenue.csv")
+
+phaseone_revenue
+
+```
+
+```{r Phase two revenue}
+
+#Audit phase two tracking sheet to make sure that all required changes have been made
+
+BC_completed <- BC_tracking %>% 
+                filter(grepl("Completed", TT.Status, ignore.case = TRUE)) 
+
+any(BC_completed$CONSUMERNO %in% BC$CMAS_CONSUMER)
+
+BC_remaining <- BC_completed %>% 
+                filter(CONSUMERNO %in% BC$CMAS_CONSUMER) 
+
+#write.csv(BC_remaining, "N:/FWBI/SDCanalysis/Reports/Results/061216_BC_Remaining.csv")
+
+#Calculate revenue gained from phase two 
+
+BC_revenue <- BC_completed %>% 
+              filter(!(CONSUMERNO %in% BC$CMAS_CONSUMER))  %>%
+              mutate(MASTERID = as.numeric(substring(CONSUMERNO, 3, 9))) %>%
+              select(CONSUMERNO, MASTERID) %>%
+              left_join(PROP)  %>%
+              filter(FINANCIAL_YEAR == 2016) %>%
+              #mutate(Qtr = paste("Qtr_", Qtr, "_17", sep = "")) %>%
+              select(CONSUMERNO, MASTERID, Qtr, CONSUMP, DISPOSAL_DESCRIPTION) %>%
+              group_by(CONSUMERNO, MASTERID, Qtr, DISPOSAL_DESCRIPTION) %>%
+              summarise(CONSUMP = sum(CONSUMP)) %>%
+              ungroup %>%
+              group_by(CONSUMERNO, MASTERID, DISPOSAL_DESCRIPTION) %>%
+              summarise(CONSUMP = mean(CONSUMP)) %>%
+              mutate(BC = ifelse(DISPOSAL_DESCRIPTION == "BODY CORPORATE", "NOTBILLED", "BILLED"),
+                     Change = (CONSUMP * 0.9 * 1.7324) - 0)
+
+phasetwo_revenue <- BC_revenue %>%
+                    group_by(BC) %>%
+                    summarise(TotalAnnualRevenue = sum(Change))
+
+phasetwo_revenue$Phase <- 2
+
+phasetwo_revenue
+
+#write.csv(phasetwo_revenue, "N:/FWBI/SDCanalysis/Reports/Results/091216_phasetwo_revenue.csv")
+
+```
+
+```{r}
+
+breaks <- function(DAILYAVG) {
+  
+  res = breakout(DAILYAVG, min.size=4, method='multi', beta=.001, degree=1, plot=TRUE)
+  
+  mean_DAILYAVG = mean(DAILYAVG[tail(res$loc,1):length(DAILYAVG)])
+  
+  if(!is.na(mean_DAILYAVG)) {
+    
+    return(mean_DAILYAVG)
+    
+  }
+  
+  else {
+    
+    return(NA)
+    
+  }
+}
+
+breaks <- function(DAILYAVG) {
+    out <- tryCatch(
+        {
+            # Just to highlight: if you want to use more than one 
+            # R expression in the "try" part then you'll have to 
+            # use curly brackets.
+            # 'tryCatch()' will return the last evaluated expression 
+            # in case the "try" part was completed successfully
+
+            message("This is the 'try' part")
+            
+            res = breakout(DAILYAVG, min.size=4, method='multi', beta=.001, degree=1, plot=F)
+            
+            if(length(res$loc) >= 1) {
+              
+              mean(DAILYAVG[tail(res$loc,1):length(DAILYAVG)])
+              
+            }
+            
+            else {
+              
+              mean(DAILYAVG)
+              
+            }
+            
+            #readLines(con=url, warn=FALSE) 
+            # The return value of `readLines()` is the actual value 
+            # that will be returned in case there is no condition 
+            # (e.g. warning or error). 
+            # You don't need to state the return value via `return()` as code 
+            # in the "try" part is not wrapped insided a function (unlike that
+            # for the condition handlers for warnings and error below)
+        },
+        error=function(cond) {
+            message("Here's the original error message:")
+            message(cond)
+            # Choose a return value in case of error
+            return(NA)
+        },
+        warning=function(cond) {
+            message("Here's the original warning message:")
+            message(cond)
+            # Choose a return value in case of warning
+            return(NULL)
+        }
+        # ,
+        # finally={
+        # # NOTE:
+        # # Here goes everything that should be executed at the end,
+        # # regardless of success or error.
+        # # If you want more than one expression to be executed, then you 
+        # # need to wrap them in curly brackets ({...}); otherwise you could
+        # # just have written 'finally=<expression>' 
+        # 
+        # }
+    )    
+    return(out)
+}
+
+foo <- function(data,column){
+  data %>%
+    #sample_n(., 100) %>%
+    group_by_(.dots = column) %>%
+    summarise(breaks(DAILYAVG))
+}
+
+BC_breaks <- foo(BC_consump, "MASTERID")
+
+BC_count <- BC_consump %>% 
+            filter(MASTERID %in% BC_remaining2$MASTERID) %>%
+            group_by(MASTERID) %>%
+            dplyr::count()
+
+#breaks <- Vectorize(breaks)
+
+# BC_breaks <- BC_consump %>%
+#              select(MASTERID, DAILYAVG) %>%
+#              group_by(MASTERID) %>%
+#              dplyr::summarise(DAILYAVG = breaks(DAILYAVG))
+
+BC_breaks <- BC_consump %>%
+             select(MASTERID, DAILYAVG) %>%
+             group_by(MASTERID) %>%
+             #mutate(names(DAILYAVG) <<- MASTERID) %>%
+             as.list(.)
+
+
+```
+
+
+```{r}
+
+#graph the progress to date
+
+Summary <- rbind(phaseone_revenue, phasetwo_revenue)
+
+#write.csv(Summary, "N:/FWBI/SDCanalysis/Reports/Results/131216_PhaseOne&Two.csv")
+
+P1 <- ggplot(Summary, aes(x = BC, y = TotalAnnualRevenue, fill = as.factor(Phase)))
+
+P1 <- P1 + geom_bar(stat="identity")
+
+P1 <- P1 + labs(title ="Total Annual ongoing revenue", x = "Status", y = "Total Annual Revenue ($)", fill = "Phase") 
+
+P1 <- P1 + scale_y_continuous(labels = comma)
+
+P1
+
+```
+
+```{r}
+
+#calculate the remaining 'potential' revenue
+
+DISP_CLASS <- read.csv("file:///N:/FWBI/SDCanalysis/Reports/PermanentBCreport/091216_DISPOSAL_CLASS_TABLE.csv",
+                        stringsAsFactors = FALSE) %>%
+              mutate(DISFACTOR = DISFACTOR/10000)
+
+BC$DISP_FAC <-  unlist(lapply(seq_along(BC$ITSDISPCLASS), function(i) if(is.na(BC$DISP_FAC[i])) {DISP_CLASS[DISP_CLASS$DISPCLASS == BC$ITSDISPCLASS[i],]$DISFACTOR} else {BC$DISP_FAC[i]}))
+
+BC$OV_RIDE <-  unlist(lapply(seq_along(BC$ITSOVDISPCLASS), function(i) if(is.na(BC$OV_RIDE[i]) & !is.na(BC$ITSOVDISPCLASS[i])) {DISP_CLASS[DISP_CLASS$DISPCLASS == BC$ITSOVDISPCLASS[i],]$DISFACTOR} else {BC$OV_RIDE[i]}))
+
+FinalSDC <- function(x) {
+  
+  if(!is.na(x[["SDCF"]])) {
+    
+    return(as.numeric(x[["SDCF"]]))
+    
+  }
+  
+  else if(!is.na(x[["ITSOVDISPCLASS"]])) {
+    
+    return(as.numeric(x[["OV_RIDE"]]))
+    
+  }
+  
+  else {
+    
+    return(as.numeric(x[["DISP_FAC"]]))
+    
+  }
+  
+}
+
+BC$FINAL_SDC <- apply(BC, 1, FinalSDC)
+
+
+
+#Calculate revenue gained from phase one               
+# %>%
+#               select(CONSUMERNO) %>%
+#               mutate(MASTERID = as.numeric(substring(CONSUMERNO, 3, 9))) %>%
+#               left_join(PROP) 
+# 
+# BCchange <- BCcomplete %>%
+#             mutate(Qtr = paste("Qtr_", Qtr, sep = "")) %>%
+#             filter((Qtr == "Qtr_1" &  FINANCIAL_YEAR == 2017) | Qtr == "Qtr_4") %>%
+#             select(CONSUMERNO:MASTERID, Qtr, DISPOSAL_DESCRIPTION) %>%
+#             distinct() %>%
+#             spread(Qtr, DISPOSAL_DESCRIPTION)
+
+#get all the remaining customers with a zero SDC
+
+##all excempt customers from phase one and two 
+BC_tracking[grepl("Exempt|Exept", BC_tracking$Response.notes, ignore.case = TRUE),]$TT.Status <- "Exempt"
+
+Excemptions <- c(BC_tracking[grepl("Exempt|NO SEWER", BC_tracking$TT.Status, ignore.case = TRUE),]$CONSUMERNO,
+                 phaseone_BC[phaseone_BC$TT.Status == "N",]$CONSUMERNO)
+
+##get summary
+
+unique(BC_report$ITSDISPCOMMENT)
+
+# Excemptions2 <- BC_report[apply(BC_report, 1, function(x) any(grepl("exempt|irrigation|(no|not).*(common|SDC|sewer)|garden.*tap|septic", x, ignore.case = TRUE) == TRUE)),]$CMAS_CONSUMER
+
+Excemptions2 <- BC_report[!is.na(BC_report$ITSDISPCOMMENT),]$CMAS_CONSUMER
+
+#irrigation <- BC_report[lapply(BC_report, function(x) grepl("irrigation|no common", x, ignore.case = TRUE))]
+
+BC_remaining <- BC %>%
+                filter(FINAL_SDC == 0) %>%
+                mutate(MASTERID = as.numeric(substr(CMAS_CONSUMER, 3, 9))) %>%
+                left_join(PROP) %>% 
+                filter(FINANCIAL_YEAR == 2016,
+                       !(CMAS_CONSUMER %in% Excemptions),
+                       !(CMAS_CONSUMER %in% Excemptions2),
+                       !(CMAS_CONSUMER %in% BC_tracking$CONSUMERNO)) %>% #filter out excempt
+                select(CMAS_CONSUMER, MASTERID, Qtr, CONSUMP, DISPOSAL_DESCRIPTION) %>%
+                group_by(CMAS_CONSUMER, MASTERID, Qtr, DISPOSAL_DESCRIPTION) %>%
+                summarise(CONSUMP = sum(CONSUMP)) %>%
+                ungroup %>%
+                group_by(CMAS_CONSUMER, MASTERID, DISPOSAL_DESCRIPTION) %>%
+                summarise(CONSUMP = mean(CONSUMP)) %>%
+                mutate(BC = "NOTBILLED",
+                       Change = (CONSUMP * 0.9 * 1.7324) - 0)
+
+
+any(BC_remaining$CMAS_CONSUMER %in% phaseone_BC$CONSUMERNO)
+any(BC_remaining$CMAS_CONSUMER %in% BC_tracking$CONSUMERNO)
+
+
+potential_revenue <- BC_remaining %>%
+                    group_by(BC) %>%
+                    summarise(TotalAnnualRevenue = sum(Change, na.rm = TRUE)) %>%
+                    ungroup() %>%
+                    filter(!is.na(BC))
+
+potential_revenue
+
+```
+
+```{r BC count timeseries}
+
+ConsumptionSummary <- PROP  %>%
+                      filter(FINANCIAL_YEAR == 2017) %>%
+                      #mutate(Qtr = paste("Qtr_", Qtr, "_17", sep = "")) %>%
+                      select(MASTERID, Qtr, CONSUMP, DISPOSAL_DESCRIPTION) %>%
+                      group_by(MASTERID, Qtr, DISPOSAL_DESCRIPTION) %>%
+                      summarise(CONSUMP = sum(CONSUMP)) %>%
+                      ungroup %>%
+                      group_by(MASTERID, DISPOSAL_DESCRIPTION) %>%
+                      summarise(CONSUMP = mean(CONSUMP))
+
+
+files <- list.files("N:/FWBI/SDCanalysis/Reports/PermanentBCreport", full.names = TRUE)
+
+reports <- files[grepl("BodyCorpSDC", files)]
+
+sort.list(as.Date(gsub(".*\\/([0-9]*)_.*$","\\1",reports), format = "%d%m%Y"), decreasing = F)
+
+PROP_dt <- data.table(ConsumptionSummary)
+
+reportdate <- plyr::ldply(seq_along(reports), function(i) c(reportdate = gsub(".*\\/([0-9]*)_.*$","\\1",reports[i]), loc = reports[i])) %>%
+                mutate(reportdate = as.Date(reportdate, format = "%d%m%Y")) %>%
+                arrange(reportdate)
+
+reports <- as.list(reportdate)
+
+reports
+
+# DT[, .(V4.Sum = sum(V4)),
+# by=V1][order(-V1)]
+
+#fread(reports[1])
+
+count_bydate <- plyr::ldply(seq_along(reports$loc), function(i) 
+  c(
+    # boxplot(merge(data.table(fread(reports$loc[i], stringsAsFactors = F)[, MASTERID := as.numeric(substring(ID, 3, 9))], key = "MASTERID"), PROP_dt)[CONSUMP > 0]$CONSUMP)$stats,
+                                              New = ifelse(i > 1, nrow(data.table(fread(reports$loc[i], stringsAsFactors = F)[, MASTERID := as.numeric(substring(ID, 3, 9))], key = "MASTERID")[!data.table(fread(reports$loc[i - 1], stringsAsFactors = F)[, MASTERID := as.numeric(substring(ID, 3, 9))], key = "MASTERID")]), 0),
+                                              Removed = ifelse(i > 1, nrow(data.table(fread(reports$loc[i - 1], stringsAsFactors = F)[, MASTERID := as.numeric(substring(ID, 3, 9))], key = "MASTERID")[!data.table(fread(reports$loc[i], stringsAsFactors = F)[, MASTERID := as.numeric(substring(ID, 3, 9))], key = "MASTERID")]), 0), 
+                                              #Net = New - removed,
+                                              date = gsub(".*\\/([0-9]*)_.*$","\\1",reports$loc[i]))) %>%
+                mutate(date = as.Date(date, format = "%d%m%Y"),
+                       Net = as.numeric(New) - as.numeric(Removed)) %>%
+                mutate(CumulativeTotal = cumsum(Net))
+
+# count_bydate <- plyr::ldply(seq_along(reports), function(i) c(boxplot(merge(data.table(fread(reports[i], stringsAsFactors = F)[, MASTERID := as.numeric(substring(ID, 3, 9))], key = "MASTERID"), PROP_dt)[CONSUMP > 0]$CONSUMP)$stats,
+#                                               New = ifelse(i > 1, nrow(data.table(fread(reports[i], stringsAsFactors = F)[, MASTERID := as.numeric(substring(ID, 3, 9))], key = "MASTERID")[!data.table(fread(reports[i - 1], stringsAsFactors = F)[, MASTERID := as.numeric(substring(ID, 3, 9))], key = "MASTERID")]), 0),                 
+#                                               date = gsub(".*\\/([0-9]*)_.*$","\\1",reports[i]))) %>%
+#                 mutate(date = as.Date(date, format = "%d%m%Y"))
+
+plot(count_bydate$New ~ count_bydate$date)
+
+# data.table(fread(reports[i], stringsAsFactors = F)[, MASTERID := as.numeric(substring(ID, 3, 9))], key = "MASTERID")[!data.table(fread(reports[i - 1], stringsAsFactors = F)[, MASTERID := as.numeric(substring(ID, 3, 9))], key = "MASTERID")]
+# 
+# count_bydate <- plyr::ldply(seq_along(reports), function(i) 
+#   c(
+#     # boxplot(merge(data.table(fread(reports[i], stringsAsFactors = F)[, MASTERID := as.numeric(substring(ID, 3, 9))], key = "CMAS_CONSUMER"), PROP_dt)[CONSUMP > 0]$CONSUMP)$stats,
+#                                               New = ifelse(i > 1, nrow(data.table(fread(reports[i], stringsAsFactors = F)[, MASTERID := as.numeric(substring(ID, 3, 9))], key = "CMAS_CONSUMER")[!data.table(fread(reports[i - 1], stringsAsFactors = F)[, MASTERID := as.numeric(substring(ID, 3, 9))], key = "CMAS_CONSUMER")]), 0),                 
+#                                               date = gsub(".*\\/([0-9]*)_.*$","\\1",reports[i]))) %>%
+#                 mutate(date = as.Date(date, format = "%d%m%Y"))
+
+####Test to see what 'new' and 'removed' means####
+data.table(fread(reports$loc[i], stringsAsFactors = F)[, MASTERID := as.numeric(substring(ID, 3, 9))], key = "CMAS_CONSUMER")[!data.table(fread(reports$loc[i - 1], stringsAsFactors = F)[, MASTERID := as.numeric(substring(ID, 3, 9))], key = "CMAS_CONSUMER")]
+
+```
+
+```{r Remaining zero SDC}
+
+P2 <- ggplot(potential_revenue, aes(x = BC, y = TotalAnnualRevenue))
+
+P2 <- P2 + geom_bar(stat="identity")
+
+P2
+
+```
+
+```{r Benchmark revenue}
+
+Total_customers1 <- length(unique(phaseone_BC$CONSUMERNO)[!is.na(unique(phaseone_BC$CONSUMERNO))])
+
+BC_revenue2$PHASE <- 1
+
+Revenue_benchmark1 <- BC_revenue2 %>%
+                     group_by(PHASE) %>%
+                     summarise(`Total revenue ($)` = sum(Change, na.rm = TRUE),
+                               `Customer count` = Total_customers1,
+                               `Revenue benchmark ($/customer)` = sum(Change, na.rm = TRUE)/Total_customers1
+                               )
+
+Total_customers2 <- length(unique(BC_tracking$CONSUMERNO)[!is.na(unique(BC_tracking$CONSUMERNO))])
+
+BC_revenue$PHASE <- 2
+
+Revenue_benchmark2 <- BC_revenue %>%
+                     group_by(PHASE) %>%
+                     summarise(`Total revenue ($)` = sum(Change, na.rm = TRUE),
+                               `Customer count` = Total_customers2,
+                               `Revenue benchmark ($/customer)` = sum(Change, na.rm = TRUE)/Total_customers2)
+
+
+# Revenue_todate <- rbind(BC_revenue, BC_revenue2)
+# 
+# Revenue_benchmark <- Revenue_todate %>%
+#                      group_by(PHASE) %>%
+#                      summarise(`Revenue benchmark ($/customer)` = sum(Change, na.rm = TRUE)/Total_customers,
+#                                `Total revenue ($)` = sum(Change, na.rm = TRUE))
+
+#Revenue_benchmark$STATUS <- "Realised"
+
+# Total_customers_potential <- BC_remaining[!is.na(BC_remaining$CMAS_CONSUMER) & BC_remaining$CONSUMP > 0,]$CMAS_CONSUMER %>%
+#                              unique %>%
+#                              length
+
+#Total_customers_potential <- 870
+
+BC_remaining$PHASE <- "3a"
+
+potential_revenue_benchmark <- BC_remaining %>%
+                               filter(CONSUMP > 0) %>%
+                               group_by(PHASE) %>%
+                               summarise(`Total revenue ($)` = sum(Change, na.rm = TRUE),
+                                         `Customer count` = n_distinct(CMAS_CONSUMER),
+                                         `Revenue benchmark ($/customer)` = sum(Change, na.rm = TRUE)/ n_distinct(CMAS_CONSUMER)
+                                         ) %>%
+                               ungroup() 
+
+# Total_customers_potential2 <- BC_remaining[!is.na(BC_remaining$CMAS_CONSUMER) & BC_remaining$CONSUMP > 12.5,]$CMAS_CONSUMER %>%
+#                              unique %>%
+#                              length
+
+BC_remaining$PHASE <- "3b"
+
+potential_revenue_benchmark2 <- BC_remaining %>%
+                                filter(CONSUMP > (150*365)/(4*1000)) %>%
+                                group_by(PHASE) %>%
+                                summarise(`Total revenue ($)` = sum(Change, na.rm = TRUE),
+                                          `Customer count` = n_distinct(CMAS_CONSUMER),
+                                          `Revenue benchmark ($/customer)` = sum(Change, na.rm = TRUE)/ n_distinct(CMAS_CONSUMER)
+                                          ) %>%
+                                ungroup() 
+
+#potential_revenue_benchmark$STATUS <- "Potential"
+
+Summary <- rbind(Revenue_benchmark1, Revenue_benchmark2,  potential_revenue_benchmark, potential_revenue_benchmark2 )
+
+Summary
+
+write.csv(Summary, "N:/FWBI/SDCanalysis/Reports/Results/131216_RevenueBenchmark.csv", row.names = FALSE)
+
+```
+
+```{r}
+
+P3 <- ggplot(Summary, aes(x = PHASE, y = `Revenue benchmark ($/customer)`, fill = PHASE))
+
+P3 <- P3 + geom_bar(stat="identity")
+
+P3 <- P3 <- P3 + labs(title ="Annual ongoing revenue benchmark", x = "Phase", fill = "Phase") 
+
+P3 <- P3 + scale_y_continuous(labels = comma)
+
+P3
+
+```
+
+```{r Forward estimates}
+
+BC_remaining2 <- BC_remaining %>%
+                 filter(CMAS_CONSUMER != 12218997610 & CMAS_CONSUMER != 12181997710 & CMAS_CONSUMER != 12125341613 & CONSUMP > 0) 
+
+potential_optimistic <- sum(BC_remaining2$CONSUMP) * 0.9
+
+hit_rate <- length(BC_tracking$CONSUMERNO[BC_tracking$TT.Status == "Completed"])/length(BC_tracking$CONSUMERNO[BC_tracking$TT.Status != "Completed"])
+
+potential_realistic_upper <- sum(BC_remaining2 %>% filter(CONSUMP > 54) %>% .$CONSUMP) * 0.9 * hit_rate 
+potential_realistic_lower <- sum(BC_remaining2 %>% filter(CONSUMP > 54) %>% .$CONSUMP) * 0.9 * hit_rate * (nrow(BC_tracking)/(nrow(BC_remaining %>% filter(CONSUMP > 54)) + nrow(BC_tracking)))
+
+```
+
+```{r SDC all, include=FALSE}
+
+DISP_CLASS <- read.csv("file:///N:/FWBI/SDCanalysis/Reports/PermanentBCreport/091216_DISPOSAL_CLASS_TABLE.csv",
+                        stringsAsFactors = FALSE) %>%
+              mutate(DISFACTOR = DISFACTOR/10000)
+
+SDCReport <- read.csv("N:/ABR/Output 4 SDFCP WP 1.2 Clustering and 2.0 Model/GentrackReports/data for phil 2 mar.csv", stringsAsFactors = FALSE)
+
+SDCReport <- SDCReport %>%
+             ungroup() %>%
+             distinct() %>%
+             mutate(ITSOVDISPCLASS = ifelse(ITSOVDISPCLASS == "", NA, ITSOVDISPCLASS)) %>%
+             left_join(select(DISP_CLASS, DISPCLASS, DISFACTOR), by = c("ITSDISPCLASS" = "DISPCLASS")) %>%
+             left_join(select(DISP_CLASS, DISPCLASS, DISFACTOR), by = c("ITSOVDISPCLASS" = "DISPCLASS")) %>%
+             mutate(DISP_FAC = ifelse(is.na(DISP_FAC), DISFACTOR.x, DISP_FAC),
+                    OV_RIDE = ifelse(is.na(OV_RIDE), DISFACTOR.y, OV_RIDE)) %>%
+             select(-DISFACTOR.x, -DISFACTOR.y)
+
+# indx <- is.na(SDCReport$DISP_FAC)
+# 
+# DISP_FAC <- SDCReport[indx,]$DISP_FAC
+# 
+# ITSDISPCLASS <- SDCReport[indx,]$ITSDISPCLASS
+# 
+# DISP_FAC_REPLACE <- lapply(ITSDISPCLASS, function(x) DISP_CLASS[DISP_CLASS$DISPCLASS == x,]$DISFACTOR)
+# 
+# SDCReport[indx,]$DISP_FAC <- unlist(DISP_FAC_REPLACE)
+# 
+# SDCReport$DISP_FAC <-  unlist(lapply(seq_along(SDCReport$ITSDISPCLASS), function(i) if(is.na(SDCReport$DISP_FAC[i])) {DISP_CLASS[DISP_CLASS$DISPCLASS == SDCReport$ITSDISPCLASS[i],]$DISFACTOR} else {SDCReport$DISP_FAC[i]}))
+# 
+# SDCReport$OV_RIDE <-  unlist(lapply(seq_along(SDCReport$ITSOVDISPCLASS), function(i) if(is.na(SDCReport$OV_RIDE[i]) & !is.na(SDCReport$ITSOVDISPCLASS[i])) {DISP_CLASS[DISP_CLASS$DISPCLASS == SDCReport$ITSOVDISPCLASS[i],]$DISFACTOR} else {SDCReport$OV_RIDE[i]}))
+
+FinalSDC <- function(x) {
+  
+  if(!is.na(x[["SDCF"]])) {
+    
+    return(as.numeric(x[["SDCF"]]))
+    
+  }
+  
+  else if(!is.na(x[["ITSOVDISPCLASS"]])) {
+    
+    return(as.numeric(x[["OV_RIDE"]]))
+    
+  }
+  
+  else {
+    
+    return(as.numeric(x[["DISP_FAC"]]))
+    
+  }
+  
+}
+
+x <- SDCReport[1,]
+
+FinalSDC(SDCReport[1,])
+
+SDCReport$FINAL_SDC <- apply(SDCReport, 1, FinalSDC)
+
+SDCReport %>%
+  filter(!is.na(TWFAC)) %>%
+  filter(TWFAC < 1) %>%
+  nrow
+
+TW <- SDCReport %>%
+  filter(as.numeric(gsub("([0-9][0-9])(.*)", "\\1", CMAS_CONSUMER)) > 30 | (TWFAC < 1 & TWFAC > 0) ) 
+
+EMIS <- read.csv("N:/ABR/TradeWasteCustomers/02032017_ActiveInactive.csv", stringsAsFactors = FALSE, skip = 6) %>%
+        mutate(CMAS_CONSUMER = AG_CONSUMERNUMBER)
+
+TW <- TW %>%
+      dplyr::anti_join(EMIS)
+
+
+SDCReport2 <- SDCReport %>%
+              select(ID, CMAS_CONSUMER, ACNAME, ITSDISPDATE, ITSDISPCLASS, DISP_FAC, ITSOVDISPCLASS,  ITSOVDISPCLASS, OV_RIDE, TWFAC, CALC_FAC, SDCF, FINAL_SDC)
+  
+
+SDCReport3 <- SDCReport %>%
+              select(ID, CMAS_CONSUMER, LOCA_FREEFORM:LOCA_POSTCODE)
+
+write.csv(SDCReport2, "N:/ABR/Output 4 SDFCP WP 1.2 Clustering and 2.0 Model/GentrackReports/060317_SDCReport.csv", row.names = FALSE)
+
+write.csv(SDCReport3, "N:/ABR/Output 4 SDFCP WP 1.2 Clustering and 2.0 Model/GentrackReports/060317_SDCAddress.csv", row.names = FALSE)
+  
+```
+
+himmel hund
