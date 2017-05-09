@@ -11,9 +11,9 @@
 
 consumption <- function(){
 
-  prop_dt <- data.table::fread("N:/FWBI/SDCanalysis/Reports/Consumption/PROP.csv")
+  prop_dt <- data.table::fread("N:/FWBI/SDCanalysis/Reports/Consumption/PROP.csv", stringsAsFactors = F)
 
-  prop_dt2 <- prop_dt[,c(1,2,4,5,8,9)][ !is.na(MASTERID) ][, c("CONSUMP","DAYS"):=list(sum(CONSUMP, na.rm = T),
+  prop_dt2 <- prop_dt[,c(1,2,4,5,8,9)][!is.na(MASTERID),][, c("CONSUMP","DAYS"):=list(sum(CONSUMP, na.rm = T),
                                                                                        sum(DAYS, na.rm = T)),
                                                            by=list(MASTERID
                                                                    ,ACNAME
@@ -24,7 +24,7 @@ consumption <- function(){
 
   prop_dt3 <- unique(prop_dt2)
 
-  setkey(prop_dt3, MASTERID, ACNAME)
+  data.table::setkey(prop_dt3, MASTERID, ACNAME)
 
   return(prop_dt3)
 

@@ -4,7 +4,7 @@
 \alias{consumption}
 \title{Consumption data}
 \usage{
-consumption(PROP)
+consumption()
 }
 \arguments{
 \item{PROP}{dataframe of consumption from CWW_DW database (dbo.GENTRACK_WATER_EFFICIENCY) in WVDBQDEVSQL}
