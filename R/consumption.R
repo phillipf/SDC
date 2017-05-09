@@ -11,8 +11,7 @@
 
 consumption <- function(PROP){
 
-prop_dt <- data.table::data.table(PROP)
-
+prop_dt <- data.table::fread("N:/FWBI/SDCanalysis/Reports/Consumption/PROP.csv")
 
 prop_dt2 <- prop_dt[,c(1,2,4,5,8,9)][ !is.na(MASTERID) ][, c("CONSUMP","DAYS"):=list(sum(CONSUMP, na.rm = T),
                                                                                      sum(DAYS, na.rm = T)),

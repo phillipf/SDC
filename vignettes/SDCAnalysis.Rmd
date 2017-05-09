@@ -109,8 +109,6 @@ getBCreport <- function() {
 
 BC_report <- getBCreport()
 
-
-
 BC <- BC_report %>%
       mutate(MASTERID = as.numeric(substring(CMAS_CONSUMER, 3, 9))) %>%
       filter(!is.na(CMAS_CONSUMER)) %>%

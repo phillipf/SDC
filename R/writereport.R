@@ -11,11 +11,6 @@
 
 writereport <- function(report, file = getwd(), name) {
 
-  if(!require(readr)) {
-    message("installing the 'readr' package")
-    install.packages("readr")
-  }
-
   today <- format(Sys.Date(), "%d%m%Y")
 
   filename <- paste(file, today, name, ".csv", sep = "")

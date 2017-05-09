@@ -10,7 +10,9 @@
 #' BC_consumption()
 #'
 
-BC_consumption <- function(BC_report, PROP) {
+BC_consumption <- function() {
+
+  BC_report <- getBCreport()
 
   PROP <- consumption(PROP)
 

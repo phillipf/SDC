@@ -11,7 +11,9 @@ Encoding: UTF-8
 LazyData: true
 Imports:
     dplyr,
+    plyr,
     BreakoutDetection,
     readr,
     data.table
 Remotes: twitter/BreakoutDetection
+RoxygenNote: 6.0.1
