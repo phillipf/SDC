@@ -17,8 +17,6 @@ breaks <- function(DAILYAVG) {
       # 'tryCatch()' will return the last evaluated expression
       # in case the "try" part was completed successfully
 
-      message("This is the 'try' part")
-
       res = BreakoutDetection::breakout(DAILYAVG, min.size=4, method='multi', beta=.001, degree=1, plot=F)
 
       if(length(res$loc) >= 1) {

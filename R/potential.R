@@ -15,7 +15,10 @@ potential <- function() {
 
   BC_remaining <- disposal_class(BC_remaining)
 
-  BC_consump <- BC_consumption()
+  BC_consump <- BC_consumption() %>%
+                group_by(MASTERID) %>%
+                filter(!all(DAILYAVG == 0)) %>%
+                ungroup()
 
   BC_breaks <- breaks_df(BC_consump, "MASTERID")
 

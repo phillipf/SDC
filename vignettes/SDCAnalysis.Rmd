@@ -51,21 +51,21 @@ ABR <- odbcDriverConnect(connection="Driver={SQL Server Native Client 11.0};
 #                             uid=report;
 #                             pwd=report")
 
-# PROP <- sqlQuery(CWW_DW,"SELECT distinct [MASTERID]
-#                  ,[ACNAME]
-#                  ,[STREET]
-#                  ,[FINANCIAL_YEAR]
-#                  ,[Qtr]
-#                  ,[GBIREAD_TODATE]
-#                  ,[INVOICEDATE]
-#                  ,[CONSUMP]
-#                  ,[DAYS]
-#                  ,[DISPOSAL_DESCRIPTION]
-#                  ,[ITYPE_DESC]
-#                  FROM [CWW_DW].[dbo].[GENTRACK_WaterEfficiency_PROP_CONSUMP]
-#                  --WHERE [FINANCIAL_YEAR] = '2017'
-#                  --OR [FINANCIAL_YEAR] = '2016'",
-#                  stringsAsFactors = FALSE)
+PROP <- sqlQuery(CWW_DW,"SELECT distinct [MASTERID]
+                 ,[ACNAME]
+                 ,[STREET]
+                 ,[FINANCIAL_YEAR]
+                 ,[Qtr]
+                 ,[GBIREAD_TODATE]
+                 ,[INVOICEDATE]
+                 ,[CONSUMP]
+                 ,[DAYS]
+                 ,[DISPOSAL_DESCRIPTION]
+                 ,[ITYPE_DESC]
+                 FROM [CWW_DW].[dbo].[GENTRACK_WaterEfficiency_PROP_CONSUMP]
+                 --WHERE [FINANCIAL_YEAR] = '2017'
+                 --OR [FINANCIAL_YEAR] = '2016'",
+                 stringsAsFactors = FALSE)
 
 #write.csv(PROP, "C:/Users/farrelp1/Documents/SDC/data/PROP.csv", row.names = F)
 
