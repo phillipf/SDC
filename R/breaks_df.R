@@ -13,5 +13,5 @@
 breaks_df <- function(data, column){
   data %>%
     dplyr::group_by_(.dots = column) %>%
-    dplyr::summarise(breaks(DAILYAVG))
+    dplyr::summarise(DAILYAVG = breaks(DAILYAVG))
 }

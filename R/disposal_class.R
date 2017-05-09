@@ -16,12 +16,12 @@ disposal_class <- function(BC_report) {
   BC <- BC_report %>%
     dplyr::mutate(MASTERID = as.numeric(substring(CMAS_CONSUMER, 3, 9))) %>%
     dplyr::filter(!is.na(CMAS_CONSUMER)) %>%
-    dplyr::mutate(NUMBER_FIRST = LOCA_HOUSE,
-           NUMBER_LAST = NA,
-           FINAL_STREET = LOCA_STREET,
-           FINAL_LOCALITY = LOCA_SUBURB,
-           ADDRESS_TYPE = 1) %>%
-    dplyr::select(CMAS_CONSUMER, ITSDISPCLASS:SDCF)
+    # dplyr::mutate(NUMBER_FIRST = LOCA_HOUSE,
+    #        NUMBER_LAST = NA,
+    #        FINAL_STREET = LOCA_STREET,
+    #        FINAL_LOCALITY = LOCA_SUBURB,
+    #        ADDRESS_TYPE = 1) %>%
+    dplyr::select(CMAS_CONSUMER, MASTERID, ITSDISPCLASS:SDCF)
 
   BC$DISP_FAC <-  unlist(lapply(seq_along(BC$ITSDISPCLASS),
                                 function(i)
@@ -39,7 +39,7 @@ disposal_class <- function(BC_report) {
                                )
                         )
 
-  BC$FINAL_SDC <- apply(BC, 1, FinalSDC)
+  BC$FINAL_SDC <- apply(BC, 1, finalSDC)
 
   return(BC)
 
