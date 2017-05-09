@@ -14,7 +14,7 @@ BC_consumption <- function() {
 
   BC_report <- getBCreport()
 
-  PROP <- consumption(PROP)
+  PROP <- consumption()
 
   BC_dt <- data.table::data.table(BC_report)
 
