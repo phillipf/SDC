@@ -5,18 +5,16 @@
 #' @param DAILYAVG a vector of daily average consumption
 #' @export
 #' @examples
-#' breaks3()
+#' breaks4()
 #'
 
-breaks3 <- function(DAILYAVG) {
+breaks4 <- function(DAILYAVG) {
 
       out <- c(Mean = NA,
-               MeanBreakout = NA,
                BreakoutIndex = NA,
                Veclength = NA,
                anomIndex = NA,
-               anomValue = NA,
-               MeanNoAnom = NA
+               anomValue = NA
                )
 
 
@@ -32,15 +30,13 @@ breaks3 <- function(DAILYAVG) {
 
           if(nrow(anoms$anoms) >= 1 & length(res$loc) >= 1) {
 
-            out[["MeanBreakout"]] <- mean(DAILYAVG[tail(res$loc,1):length(DAILYAVG)], na.rm = T)
-
             out[["BreakoutIndex"]] <- tail(res$loc,1)
 
             out[["anomIndex"]] <- anoms$anoms$index[anoms$anoms$index == max(anoms$anoms$index)]
 
             out[["anomValue"]] <- anoms$anoms$anoms[anoms$anoms$index == max(anoms$anoms$index)]
 
-            out[["MeanNoAnom"]] <- mean(DAILYAVG[tail(res$loc,1):length(DAILYAVG) & -max(anoms$anoms$index)], na.rm = T)
+            out[["Mean"]] <- mean(DAILYAVG[tail(res$loc,1):length(DAILYAVG) & -max(anoms$anoms$index)], na.rm = T)
 
 
           }
@@ -51,21 +47,18 @@ breaks3 <- function(DAILYAVG) {
 
             out[["anomValue"]] <- anoms$anoms$anoms[anoms$anoms$index == max(anoms$anoms$index)]
 
-            out[["MeanNoAnom"]] <- mean(DAILYAVG[-max(anoms$anoms$index)], na.rm = T)
+            out[["Mean"]] <- mean(DAILYAVG[-max(anoms$anoms$index)], na.rm = T)
 
 
           }
 
           else if(nrow(anoms$anoms) < 1 & length(res$loc) >= 1){
 
-            out[["MeanBreakout"]] <- mean(DAILYAVG[tail(res$loc,1):length(DAILYAVG)], na.rm = T)
+            out[["Mean"]] <- mean(DAILYAVG[tail(res$loc,1):length(DAILYAVG)], na.rm = T)
 
             out[["BreakoutIndex"]] <- tail(res$loc,1)
 
           }
-
-          out[["Mean"]] <- mean(DAILYAVG, na.rm = T)
-
 
           }
 
@@ -75,13 +68,17 @@ breaks3 <- function(DAILYAVG) {
 
           if(length(res$loc) >= 1) {
 
-            out[["MeanBreakout"]] <- mean(DAILYAVG[tail(res$loc,1):length(DAILYAVG)], na.rm = T)
+            out[["Mean"]] <- mean(DAILYAVG[tail(res$loc,1):length(DAILYAVG)], na.rm = T)
 
             out[["BreakoutIndex"]] <- tail(res$loc,1)
 
           }
 
-          out[["Mean"]] <- mean(DAILYAVG, na.rm = T)
+          else {
+
+            out[["Mean"]] <- mean(DAILYAVG, na.rm = T)
+
+          }
 
         }
 
