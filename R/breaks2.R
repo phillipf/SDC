@@ -10,47 +10,56 @@
 
 breaks2 <- function(DAILYAVG) {
 
-    out <- c(MeanBreakout = NA,
-                BreakoutIndex = NA,
-                anomIndex = NA,
-                anomValue = NA,
-                Veclength = NA)
+      out <- c(Mean = NA,
+               MeanBreakout = NA,
+               BreakoutIndex = NA,
+               Veclength = NA,
+               anomIndex = NA,
+               anomValue = NA,
+               MeanNoAnom = NA
+               )
 
 
-    Veclength <- length(DAILYAVG[!is.na(DAILYAVG)])
+      Veclength <- length(DAILYAVG[!is.na(DAILYAVG)])
 
-    out[["Veclength"]] <- Veclength
+      out[["Veclength"]] <- Veclength
 
-    if(Veclength >= 5) {
+        if(Veclength >= 9) {
 
-      anoms = AnomalyDetection::AnomalyDetectionVec(DAILYAVG[!is.na(DAILYAVG)], max_anoms=0.02, direction='both', plot=F, period=2)
+          anoms = AnomalyDetection::AnomalyDetectionVec(DAILYAVG[!is.na(DAILYAVG)], max_anoms=0.02, direction='pos', plot=F, period=4)
 
-    }
+        }
 
       res = BreakoutDetection::breakout(DAILYAVG, min.size=4, method='multi', beta=.001, degree=1, plot=F)
 
+        if(nrow(anoms$anoms) >= 1 & !exists("res")) {
 
-      if(length(res$loc) >= 1) {
+          out[["anomIndex"]] <- anoms$anoms$index[anoms$anoms$index == max(anoms$anoms$index)]
 
-        out[["MeanBreakout"]] <- mean(DAILYAVG[tail(res$loc,1):length(DAILYAVG)])
+          out[["anomValue"]] <- anoms$anoms$anoms[anoms$anoms$index == max(anoms$anoms$index)]
 
-        out[["BreakoutIndex"]] <- tail(res$loc,1)
+          out[["MeanNoAnom"]] <- mean(DAILYAVG[-max(anoms$anoms$index)], na.rm = T)
 
-      }
+          out[["Mean"]] <- mean(DAILYAVG, na.rm = T)
+        }
 
-      if(nrow(anoms$anoms) >= 1) {
+        if(length(res$loc) >= 1 & nrow(anoms$anoms) >= 1) {
 
-        out[["anomIndex"]] <- anoms$anoms$index[anoms$anoms$index == max(anoms$anoms$index)]
+            out[["MeanBreakout"]] <- mean(DAILYAVG[tail(res$loc,1):length(DAILYAVG)], na.rm = T)
 
-        out[["anomValue"]] <- anoms$anoms$anoms[anoms$anoms$index == max(anoms$anoms$index)]
+            out[["BreakoutIndex"]] <- tail(res$loc,1)
 
-      }
+            out[["MeanNoAnom"]] <- mean(DAILYAVG[tail(res$loc,1):length(DAILYAVG) & -anoms$anoms$index], na.rm = T)
 
-      else {
+          }
 
-        out[["MeanBreakout"]] <- mean(DAILYAVG)
+        if(length(res$loc) >= 1) {
 
-      }
+          out[["MeanBreakout"]] <- mean(DAILYAVG[tail(res$loc,1):length(DAILYAVG)], na.rm = T)
+
+          out[["BreakoutIndex"]] <- tail(res$loc,1)
+
+        }
 
    return(out)
 }
