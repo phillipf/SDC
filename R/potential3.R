@@ -4,10 +4,10 @@
 #' @keywords Body Corporate, phase one
 #' @export
 #' @examples
-#' potential2()
+#' potential3()
 #'
 
-potential2 <- function() {
+potential3 <- function() {
 
   BC_report <- getBCreport()
 
